@@ -1,0 +1,244 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>QuickCodeShare</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"/>
+
+  <!-- highlight.js (full build) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/default.min.css">
+  <style>
+    body { background:#f7fafc; }
+    textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", monospace; }
+    .card { box-shadow: 0 6px 18px rgba(0,0,0,0.06); border:0; }
+    pre.hljs { max-height: 44vh; overflow:auto; }
+    textarea#codeInput { resize: vertical; min-height: 40vh; max-height: 60vh; }
+    .small-muted { font-size: .85rem; color: #6b7280; }
+    .badge-room { font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h3 class="m-0">QuickCodeShare</h3>
+      <small class="small-muted">Paste code on one device → instant on the other</small>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-lg-4">
+        <div class="card p-3">
+          <div class="mb-2">
+            <label class="form-label">Role</label>
+            <div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="role" id="roleSender" value="sender" checked>
+                <label class="form-check-label" for="roleSender">Sender (paste code)</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="role" id="roleReceiver" value="receiver">
+                <label class="form-check-label" for="roleReceiver">Receiver (view)</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-2">
+            <label class="form-label">Room Key</label>
+            <div class="input-group">
+              <input id="roomInput" class="form-control" placeholder="room-key (share with peer)">
+              <button id="genBtn" class="btn btn-outline-secondary">Generate</button>
+            </div>
+            <div class="mt-1">
+              <button id="joinBtn" class="btn btn-primary btn-sm mt-2">Join Room</button>
+              <button id="leaveBtn" class="btn btn-outline-secondary btn-sm mt-2 d-none">Leave</button>
+            </div>
+            <div class="mt-2 small-muted">
+              <span>Share this key with the other device. Or append to URL: <code>?room=KEY</code></span>
+            </div>
+          </div>
+
+          <hr>
+
+          <div class="mb-2">
+            <div class="d-grid gap-2">
+              <button id="sendSnapshot" class="btn btn-success btn-sm">Send Snapshot Now</button>
+              <button id="copyBtn" class="btn btn-outline-secondary btn-sm">Copy to clipboard</button>
+              <button id="downloadBtn" class="btn btn-outline-secondary btn-sm">Download .txt</button>
+            </div>
+          </div>
+
+          <div class="mt-3">
+            <div id="status" class="small-muted">Not connected</div>
+            <div id="roomBadge" class="mt-1"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-8">
+        <div class="card p-3">
+          <label class="form-label">Code editor / paste area</label>
+          <textarea id="codeInput" class="form-control" placeholder="// paste your code here..."></textarea>
+
+          <div class="mt-3">
+            <label class="form-label">Preview (live)</label>
+            <pre class="hljs"><code id="highlightCode" class="hljs"></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- socket.io client served by server -->
+  <script src="/socket.io/socket.io.js"></script>
+
+  <!-- highlight.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+
+  <script>
+    // client-side behavior
+    const socket = io();
+
+    const roomInput = document.getElementById('roomInput');
+    const genBtn = document.getElementById('genBtn');
+    const joinBtn = document.getElementById('joinBtn');
+    const leaveBtn = document.getElementById('leaveBtn');
+    const sendSnapshot = document.getElementById('sendSnapshot');
+    const copyBtn = document.getElementById('copyBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    const codeInput = document.getElementById('codeInput');
+    const highlightCode = document.getElementById('highlightCode');
+    const status = document.getElementById('status');
+    const roomBadge = document.getElementById('roomBadge');
+
+    let currentRoom = null;
+    let currentRole = 'sender';
+    let typingTimer = null;
+
+    // helpers
+    function genRoom() {
+      return Math.random().toString(36).slice(2, 9);
+    }
+    genBtn.addEventListener('click', () => roomInput.value = genRoom());
+
+    // role toggle
+    document.querySelectorAll('input[name="role"]').forEach(r => r.addEventListener('change', (e) => {
+      currentRole = document.querySelector('input[name="role"]:checked').value;
+      updateUI();
+    }));
+
+    // join / leave
+    joinBtn.addEventListener('click', () => {
+      const room = roomInput.value.trim();
+      if (!room) return alert('Please enter or generate a room key.');
+      currentRoom = room;
+      socket.emit('join', { room: currentRoom, role: currentRole });
+      status.textContent = `Joining room ${currentRoom}...`;
+    });
+
+    leaveBtn.addEventListener('click', () => {
+      if (!currentRoom) return;
+      socket.emit('leave', { room: currentRoom });
+      _leaveLocal();
+    });
+
+    function _leaveLocal() {
+      currentRoom = null;
+      status.textContent = 'Not connected';
+      roomBadge.innerHTML = '';
+      leaveBtn.classList.add('d-none');
+      joinBtn.classList.remove('d-none');
+      roomInput.disabled = false;
+    }
+
+    // socket events
+    socket.on('joined', ({ room, role }) => {
+      status.textContent = `Connected as ${role}`;
+      roomBadge.innerHTML = `<span class="badge bg-info badge-room">Room: ${room}</span>`;
+      leaveBtn.classList.remove('d-none');
+      joinBtn.classList.add('d-none');
+      roomInput.disabled = true;
+    });
+
+    socket.on('peer-joined', (info) => {
+      // optional: show small message
+      console.log('peer joined', info);
+    });
+
+    socket.on('peer-left', (info) => {
+      console.log('peer left', info);
+    });
+
+    // receive code updates
+    socket.on('code-update', (code) => {
+      // only update UI if receiver, or if sender wants to see current snapshot
+      codeInput.value = code || '';
+      renderPreview(code || '');
+    });
+
+    // typing on textarea -> send (debounced)
+    codeInput.addEventListener('input', () => {
+      renderPreview(codeInput.value);
+      if (currentRole !== 'sender' || !currentRoom) return;
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => {
+        socket.emit('code-change', { room: currentRoom, code: codeInput.value });
+      }, 350); // debounce to keep it snappy but not spammy
+    });
+
+    sendSnapshot.addEventListener('click', () => {
+      if (!currentRoom) return alert('Join a room first');
+      socket.emit('send-snapshot', { room: currentRoom, code: codeInput.value });
+    });
+
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(codeInput.value);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => copyBtn.textContent = 'Copy to clipboard', 1200);
+      } catch (err) {
+        alert('Copy failed: ' + err);
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      const blob = new Blob([codeInput.value], {type: 'text/plain'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'code.txt';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    function renderPreview(code) {
+      highlightCode.textContent = code || '';
+      // highlight.js auto-detect
+      try { hljs.highlightElement(highlightCode); } catch (e) { /* ignore */ }
+    }
+
+    // auto-join via query param ?room=abc
+    (function tryAutoJoinFromQuery() {
+      const p = new URLSearchParams(location.search);
+      if (p.has('room')) {
+        roomInput.value = p.get('room');
+        // optionally auto-join only if user clicks join intentionally; don't auto-join to avoid surprises.
+      }
+    })();
+
+    function updateUI() {
+      // small visual changes if needed
+      if (currentRole === 'receiver') {
+        codeInput.readOnly = true;
+      } else {
+        codeInput.readOnly = false;
+      }
+    }
+
+    // initial preview render
+    renderPreview('');
+  </script>
+</body>
+</html>
