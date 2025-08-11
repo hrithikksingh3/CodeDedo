@@ -9,7 +9,7 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 // serve static files from /public
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'Public')));
 
 // in-memory storage for last snapshot per room
 const rooms = {}; // rooms[roomId] = { code: '...' }
